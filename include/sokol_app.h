@@ -1858,6 +1858,7 @@ typedef enum sapp_pixel_format {
     SAPP_PIXELFORMAT_SRGB8A8,
     SAPP_PIXELFORMAT_BGRA8,
     SAPP_PIXELFORMAT_SBGRA8,
+    SAPP_PIXELFORMAT_RGB10A2,    // Modified by tettou771 for TrussC: 10-bit color output support
     SAPP_PIXELFORMAT_DEPTH,
     SAPP_PIXELFORMAT_DEPTH_STENCIL,
     _SA_PPPIXELFORMAT_FORCE_U32 = 0x7FFFFFFF
@@ -2229,6 +2230,8 @@ SOKOL_APP_API_DECL const void* sapp_d3d11_get_swap_chain(void);
 
 /* Win32: get the HWND window handle */
 SOKOL_APP_API_DECL const void* sapp_win32_get_hwnd(void);
+// Modified by tettou771 for TrussC: skip the next present call (for event-driven rendering)
+SOKOL_APP_API_DECL void sapp_skip_present(void);
 
 /* GL: get major version */
 SOKOL_APP_API_DECL int sapp_gl_get_major_version(void);
@@ -3371,6 +3374,7 @@ typedef struct {
     wchar_t window_title_wide[_SAPP_MAX_TITLE_LENGTH];   // UTF-32 or UCS-2 */
     sapp_keycode keycodes[SAPP_MAX_KEYCODES];
     bool custom_cursor_bound[_SAPP_MOUSECURSOR_NUM]; // true if a custom mouse cursor is bound on that slot
+    bool skip_present;  // Modified by tettou771 for TrussC: skip next present call (for event-driven rendering)
 } _sapp_t;
 static _sapp_t _sapp;
 
@@ -5117,7 +5121,8 @@ _SOKOL_PRIVATE void _sapp_macos_mtl_swapchain_create(int width, int height) {
         _SAPP_PANIC(METAL_CREATE_SWAPCHAIN_DEPTH_TEXTURE_FAILED);
     }
     if (_sapp.sample_count > 1) {
-        _sapp.macos.mtl.msaa_tex = _sapp_macos_mtl_create_texture(width, height, MTLPixelFormatBGRA8Unorm, _sapp.sample_count, "swapchain_msaa_tex");
+        // Modified by tettou771 for TrussC: use 10-bit color output (RGB10A2) for reduced banding
+        _sapp.macos.mtl.msaa_tex = _sapp_macos_mtl_create_texture(width, height, MTLPixelFormatRGB10A2Unorm, _sapp.sample_count, "swapchain_msaa_tex");
         if (nil == _sapp.macos.mtl.msaa_tex) {
             _SAPP_PANIC(METAL_CREATE_SWAPCHAIN_MSAA_TEXTURE_FAILED);
         }
@@ -5145,7 +5150,7 @@ _SOKOL_PRIVATE id<CAMetalDrawable> _sapp_macos_mtl_swapchain_next(void) {
 }
 
 _SOKOL_PRIVATE bool _sapp_macos_mtl_display_link_active(void) {
-    return (nil != _sapp.macos.mtl.display_link) && (!_sapp.macos.mtl.display_link.paused);
+    return _sapp.macos.mtl.display_link != nil;
 }
 
 _SOKOL_PRIVATE void _sapp_macos_mtl_timing_init(void) {
@@ -5185,10 +5190,6 @@ _SOKOL_PRIVATE double _sapp_macos_mtl_timing_frame_duration(void) {
 }
 
 _SOKOL_PRIVATE void _sapp_macos_mtl_start_display_link(void) {
-    if (nil != _sapp.macos.mtl.display_link) {
-        _sapp.macos.mtl.display_link.paused = false;
-        return;
-    }
     // NOTE: CADisplayLink is only available since macOS 14.0
     SOKOL_ASSERT(nil == _sapp.macos.mtl.display_link);
     SOKOL_ASSERT(nil == _sapp.macos.mtl.fallback_timer);
@@ -5203,11 +5204,14 @@ _SOKOL_PRIVATE void _sapp_macos_mtl_start_display_link(void) {
 
 _SOKOL_PRIVATE void _sapp_macos_mtl_stop_display_link(void) {
     if (nil != _sapp.macos.mtl.display_link) {
-        _sapp.macos.mtl.display_link.paused = true;
+        [_sapp.macos.mtl.display_link invalidate];
+        // NOTE: the run-loop held the only strong reference to the display link
+        _sapp.macos.mtl.display_link = nil;
     }
 }
 
 _SOKOL_PRIVATE void _sapp_macos_mtl_start_fallback_timer(void) {
+    SOKOL_ASSERT(nil == _sapp.macos.mtl.display_link);
     SOKOL_ASSERT(nil == _sapp.macos.mtl.fallback_timer);
     _sapp.macos.mtl.fallback_timer = [NSTimer
         timerWithTimeInterval: _SAPP_MACOS_MTL_OBSCURED_FRAME_DURATION_IN_SECONDS
@@ -5245,7 +5249,8 @@ _SOKOL_PRIVATE void _sapp_macos_mtl_init(void) {
     _sapp.macos.mtl.layer.device = _sapp.macos.mtl.device;
     _sapp.macos.mtl.layer.magnificationFilter = kCAFilterNearest;
     _sapp.macos.mtl.layer.opaque = true;
-    _sapp.macos.mtl.layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    // Modified by tettou771 for TrussC: use 10-bit color output (RGB10A2) for reduced banding
+    _sapp.macos.mtl.layer.pixelFormat = MTLPixelFormatRGB10A2Unorm;
     _sapp.macos.mtl.layer.framebufferOnly = true;
     //NOTE: default is 3: _sapp.macos.mtl.layer.maximumDrawableCount = 2;
     // FIXME: _sapp.macos.mtl.layer.colorspace = ...;
@@ -6442,7 +6447,8 @@ _SOKOL_PRIVATE void _sapp_ios_mtl_swapchain_create(int width, int height) {
         _SAPP_PANIC(METAL_CREATE_SWAPCHAIN_DEPTH_TEXTURE_FAILED);
     }
     if (_sapp.sample_count > 1) {
-        _sapp.ios.mtl.msaa_tex = _sapp_ios_mtl_create_texture(width, height, MTLPixelFormatBGRA8Unorm, _sapp.sample_count, "swapchain_msaa_tex");
+        // Modified by tettou771 for TrussC: use 10-bit color output (RGB10A2) for reduced banding
+        _sapp.ios.mtl.msaa_tex = _sapp_ios_mtl_create_texture(width, height, MTLPixelFormatRGB10A2Unorm, _sapp.sample_count, "swapchain_msaa_tex");
         if (nil == _sapp.ios.mtl.msaa_tex) {
             _SAPP_PANIC(METAL_CREATE_SWAPCHAIN_MSAA_TEXTURE_FAILED);
         }
@@ -6529,7 +6535,8 @@ _SOKOL_PRIVATE void _sapp_ios_mtl_init(UIWindowScene* windowScene) {
     _sapp.ios.mtl.layer.device = _sapp.ios.mtl.device;
     _sapp.ios.mtl.layer.opaque = true;
     _sapp.ios.mtl.layer.framebufferOnly = true;
-    _sapp.ios.mtl.layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    // Modified by tettou771 for TrussC: use 10-bit color output (RGB10A2) for reduced banding
+    _sapp.ios.mtl.layer.pixelFormat = MTLPixelFormatRGB10A2Unorm;
     _sapp.ios.mtl.layer.frame = _sapp.ios.view.layer.frame;
 
     [_sapp.ios.view.layer addSublayer:_sapp.ios.mtl.layer];
@@ -7964,9 +7971,12 @@ _SOKOL_PRIVATE void _sapp_emsc_register_eventhandlers(void) {
     emscripten_set_mouseenter_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_mouse_cb);
     emscripten_set_mouseleave_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_mouse_cb);
     emscripten_set_wheel_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_wheel_cb);
-    emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, 0, true, _sapp_emsc_key_cb);
-    emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, 0, true, _sapp_emsc_key_cb);
-    emscripten_set_keypress_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, 0, true, _sapp_emsc_key_cb);
+    // Modified by tettou771 for TrussC: register keyboard events on canvas instead of window
+    // This allows other page elements (like Monaco editor) to handle keyboard events
+    // Canvas must have tabindex attribute to receive focus
+    emscripten_set_keydown_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_key_cb);
+    emscripten_set_keyup_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_key_cb);
+    emscripten_set_keypress_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_key_cb);
     emscripten_set_touchstart_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_touch_cb);
     emscripten_set_touchmove_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_touch_cb);
     emscripten_set_touchend_callback(_sapp.html5_canvas_selector, 0, true, _sapp_emsc_touch_cb);
@@ -7996,9 +8006,10 @@ _SOKOL_PRIVATE void _sapp_emsc_unregister_eventhandlers(void) {
     emscripten_set_mouseenter_callback(_sapp.html5_canvas_selector, 0, true, 0);
     emscripten_set_mouseleave_callback(_sapp.html5_canvas_selector, 0, true, 0);
     emscripten_set_wheel_callback(_sapp.html5_canvas_selector, 0, true, 0);
-    emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, 0, true, 0);
-    emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, 0, true, 0);
-    emscripten_set_keypress_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, 0, true, 0);
+    // Modified by tettou771 for TrussC: unregister from canvas (see register above)
+    emscripten_set_keydown_callback(_sapp.html5_canvas_selector, 0, true, 0);
+    emscripten_set_keyup_callback(_sapp.html5_canvas_selector, 0, true, 0);
+    emscripten_set_keypress_callback(_sapp.html5_canvas_selector, 0, true, 0);
     emscripten_set_touchstart_callback(_sapp.html5_canvas_selector, 0, true, 0);
     emscripten_set_touchmove_callback(_sapp.html5_canvas_selector, 0, true, 0);
     emscripten_set_touchend_callback(_sapp.html5_canvas_selector, 0, true, 0);
@@ -8589,7 +8600,8 @@ _SOKOL_PRIVATE void _sapp_d3d11_create_device_and_swapchain(void) {
     DXGI_SWAP_CHAIN_DESC* sc_desc = &_sapp.d3d11.swap_chain_desc;
     sc_desc->BufferDesc.Width = (UINT)_sapp.framebuffer_width;
     sc_desc->BufferDesc.Height = (UINT)_sapp.framebuffer_height;
-    sc_desc->BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    // Modified by tettou771 for TrussC: use 10-bit color output (RGB10A2) for reduced banding
+    sc_desc->BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
     sc_desc->BufferDesc.RefreshRate.Numerator = 60;
     sc_desc->BufferDesc.RefreshRate.Denominator = 1;
     sc_desc->OutputWindow = _sapp.win32.hwnd;
@@ -8716,7 +8728,8 @@ _SOKOL_PRIVATE void _sapp_d3d11_create_default_render_target(void) {
 
     /* create MSAA texture and view if antialiasing requested */
     if (_sapp.sample_count > 1) {
-        tex_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        // Modified by tettou771 for TrussC: use 10-bit color output (RGB10A2) for reduced banding
+        tex_desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
         hr = _sapp_d3d11_CreateTexture2D(_sapp.d3d11.device, &tex_desc, NULL, &_sapp.d3d11.msaa_rt);
         SOKOL_ASSERT(SUCCEEDED(hr) && _sapp.d3d11.msaa_rt);
         hr = _sapp_d3d11_CreateRenderTargetView(_sapp.d3d11.device, (ID3D11Resource*)_sapp.d3d11.msaa_rt, NULL, &_sapp.d3d11.msaa_rtv);
@@ -8744,12 +8757,19 @@ _SOKOL_PRIVATE void _sapp_d3d11_destroy_default_render_target(void) {
 _SOKOL_PRIVATE void _sapp_d3d11_resize_default_render_target(void) {
     if (_sapp.d3d11.swap_chain) {
         _sapp_d3d11_destroy_default_render_target();
-        _sapp_dxgi_ResizeBuffers(_sapp.d3d11.swap_chain, _sapp.d3d11.swap_chain_desc.BufferCount, (UINT)_sapp.framebuffer_width, (UINT)_sapp.framebuffer_height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
+        // Modified by tettou771 for TrussC: use 10-bit color output (RGB10A2) for reduced banding
+        _sapp_dxgi_ResizeBuffers(_sapp.d3d11.swap_chain, _sapp.d3d11.swap_chain_desc.BufferCount, (UINT)_sapp.framebuffer_width, (UINT)_sapp.framebuffer_height, DXGI_FORMAT_R10G10B10A2_UNORM, 0);
         _sapp_d3d11_create_default_render_target();
     }
 }
 
 _SOKOL_PRIVATE void _sapp_d3d11_present(bool do_not_wait) {
+    // Modified by tettou771 for TrussC: skip present if flag is set (fix D3D11 flickering)
+    if (_sapp.skip_present) {
+        _sapp.skip_present = false;
+        return;
+    }
+    // end of modification
     UINT flags = 0;
     if (_sapp.win32.is_win10_or_greater && do_not_wait) {
         /* this hack/workaround somewhat improves window-movement and -sizing
@@ -9859,6 +9879,7 @@ _SOKOL_PRIVATE void _sapp_win32_create_window(void) {
         _sapp_win32_update_dimensions();
     }
     ShowWindow(_sapp.win32.hwnd, SW_SHOW);
+    SetForegroundWindow(_sapp.win32.hwnd);
     DragAcceptFiles(_sapp.win32.hwnd, 1);
 }
 
@@ -13978,7 +13999,8 @@ SOKOL_API_IMPL sapp_pixel_format sapp_color_format(void) {
                 return SAPP_PIXELFORMAT_NONE;
         }
     #elif defined(SOKOL_METAL) || defined(SOKOL_D3D11)
-        return SAPP_PIXELFORMAT_BGRA8;
+        // Modified by tettou771 for TrussC: report 10-bit color format (RGB10A2)
+        return SAPP_PIXELFORMAT_RGB10A2;
     #else
         return SAPP_PIXELFORMAT_RGBA8;
     #endif
@@ -14176,6 +14198,12 @@ SOKOL_API_IMPL void sapp_quit(void) {
 SOKOL_API_IMPL void sapp_consume_event(void) {
     _sapp.event_consumed = true;
 }
+
+// Modified by tettou771 for TrussC: skip the next present call (fix D3D11 flickering)
+SOKOL_API_IMPL void sapp_skip_present(void) {
+    _sapp.skip_present = true;
+}
+// end of modification
 
 /* NOTE: on HTML5, sapp_set_clipboard_string() must be called from within event handler! */
 SOKOL_API_IMPL void sapp_set_clipboard_string(const char* str) {
